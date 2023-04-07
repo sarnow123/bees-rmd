@@ -1,0 +1,289 @@
+# Stat 108, Project 1 - Dashboard
+# Maya Rayle, Saul Arnow, and Hailey Olcott
+
+#Make sure that you commit, then pull, then push. Do this as frequently as possible. 
+
+#libraries
+library(ggplot2)
+library(lubridate)
+library(tidyr)
+library(dplyr)
+library(mosaic)
+library(tidyverse)
+library(shiny)
+library(shinydashboard)
+library(rsconnect)
+library(DT)
+library(tigris)
+library(plotly)
+
+# Load data
+# Manual load
+colony <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2022/2022-01-11/colony.csv')
+stressor <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2022/2022-01-11/stressor.csv')
+
+# -------------------------------------
+
+#DATA WRANGLING
+stressor_tidy <- stressor %>% 
+  separate(col = months, into = c("StartMonth", "EndMonth"),
+           sep = "-") %>% 
+  mutate(StartMonth = match(StartMonth, month.name), 
+         EndMonth = match(EndMonth, month.name)) %>% 
+  mutate(StartDate = make_date(year, StartMonth), 
+         EndDate = ceiling_date(make_date(year, EndMonth), "month") - days(1)) %>% 
+  pivot_wider(names_from = stressor, values_from = stress_pct)
+
+colony_tidy <- colony %>% 
+  separate(col = months, into = c("StartMonth", "EndMonth"),
+           sep = "-") %>% 
+  mutate(StartMonth = match(StartMonth, month.name), 
+         EndMonth = match(EndMonth, month.name)) %>% 
+  mutate(StartDate = make_date(year, StartMonth), 
+         EndDate = ceiling_date(make_date(year, EndMonth), "month") - days(1))
+
+#merging the data
+Bees <- merge(colony_tidy, stressor_tidy) 
+
+#removing USA overall from the state by state bees dataset
+Bees <- Bees %>% 
+  subset(!(state == "United States"))
+
+#doing it on the US overall data
+us_overall_colonies <- colony_tidy %>% 
+  filter(state == "United States")
+us_overall_stressors <- stressor_tidy %>% 
+  filter(state == "United States")
+
+USA_overall <- merge(us_overall_colonies, us_overall_stressors)
+
+#Note: Use "Bee_states" and "USA_overall" datasets for all further analyses
+
+#colony lost map
+us_states <- tigris::states(cb = TRUE, resolution = "20m", progress_bar = FALSE)
+
+# Option 4
+us_states_shifted4 <- tigris::shift_geometry(us_states, 
+                                             preserve_area = TRUE,
+                                             position = "outside")
+
+#joining the data 
+Bee_states <- left_join(Bees, us_states_shifted4, by = c("state" = "NAME"))
+
+
+# -------------------------------------
+
+# User interface
+ui <- dashboardPage(skin = "yellow",
+                    dashboardHeader(title = "Bee Colonies in the US"),
+                    dashboardSidebar(
+                      sidebarMenu(
+                        menuItem("Colonies by State", tabName = "colonies"),
+                        menuItem("Colony Loss Map", tabName = "stressors"),
+                        menuItem("Table of Colony Stressors", tabName = "table"),
+                        menuItem("Colonies Nationally", tabName = "national_colonies"),
+                        menuItem("Data Information", tabName = "info")
+                      )
+                    ),
+                    dashboardBody(
+                      tabItems(
+                        tabItem("colonies",
+                                #insert tab content here
+                                fluidPage(
+                                  titlePanel("Colonies by State"),
+                                  h4("Input year range and states of interest to observe changes in the number of bee colonies in the United States"),
+                                  h5("Note: Data is missing from April to June of 2019."),
+                                  fluidRow(
+                                    box(
+                                      sliderInput(
+                                        "year_range", "Range of Years:",
+                                        min = min(Bee_states$year), 
+                                        max = max(Bee_states$year),
+                                        value = c(2015,2021),
+                                        sep = ""),
+                                      selectizeInput(
+                                        inputId = "states",
+                                        label = "Enter state names here",
+                                        choices = Bee_states$state,
+                                        multiple = TRUE,
+                                        selected = "California"),
+                                      p("Click update to see results!"),
+                                      actionButton("update", "Update Results!",
+                                                   style="color: black; background-color: orange; border-color: black")
+                                      )
+                                    ),  
+                                  ),
+                                fluidRow(
+                                  box(plotOutput("newstates")),
+                                  box(DTOutput("table"))
+                                )
+                        ),
+                        tabItem("stressors",
+                                #insert tab content here
+                                fluidPage(
+                                  h2("Colony Loss Map"),
+                                  h4("Percent of colonies across a map of the United States by year"),
+                                  h4("Select a year and click update to view the percent of colonies lost in that given year"),
+                                  h5("Note: Data is missing for certain states - Nevada and New Hampshire"),
+                                  fluidRow(
+                                    box(sliderInput(
+                                      "year_range_1", "Year",
+                                      min = min(Bee_states$year), 
+                                      max = max(Bee_states$year),
+                                      value = 2021,
+                                      sep = ""),
+                                    p("Click update to see results!"),
+                                      actionButton("update_1", "Update Results!",
+                                                   style="color: black; background-color: orange; border-color: black")
+                                  )),
+                                  plotOutput("map")
+                                )
+                        ),
+                        tabItem("table",
+                                #insert tab content here
+                                fluidPage(
+                                  h2("Table of Colony Stressors"),
+                                  h4("Percent of colonies affected by a given stressor anytime during the quarter across different states"),
+                                  h5("Type the name of a state and click update to view the stressors in that state"),
+                                  h5("To view multiple states leave spaces between state names"),
+                                  fluidRow(
+                                    box(textInput(
+                                      inputId = "state_name",
+                                      label = "Enter state names here (capitalize first letter)",
+                                      value = " ",
+                                      width = NULL,
+                                      placeholder = "State Name")),
+                                  p("Click update to see results!"),
+                                  actionButton("update_2", "Update Results!",
+                                               style="color: black; background-color: orange; border-color: black")
+                                ),
+                                  dataTableOutput("colonies_table")
+                                )
+                        ),
+                        tabItem("national_colonies", 
+                                fluidPage(
+                                  titlePanel("USA Colonies Overall"),
+                                  h4("Input year range to observe changes in the number of bee colonies nationally"),
+                                  h5("Note: Data is missing from April to June of 2019."),
+                                  fluidRow(
+                                    box(
+                                      sliderInput(
+                                        "year_range_2", "Range of Years:",
+                                        min = min(USA_overall$year), 
+                                        max = max(USA_overall$year),
+                                        value = c(2015,2021),
+                                        sep = ""),
+                                      p("Click update to see results!"),
+                                      actionButton("update_3", "Update Results!",
+                                                    style="color: black; background-color: orange; border-color: black")
+                                    )
+                                  ),  
+                                ),
+                                  fluidRow(
+                                    plotOutput("usaOverall")
+                                  )
+                                ),
+                        tabItem("info",
+                                fluidPage(
+                                  h2("Data Information"),
+                                  h4("This data depicts information on honey bee colonies in the United States between 2015 and 2021 in terms of number of colonies, maximum, lost, percent lost, added, renovated, and percent renovated.
+                                     It also shows Colony Collapse Disorder symptoms. The report also identifies colony health stressors with five or more colonies."),
+                                  h4(a("Link to TidyTuesday Data on GitHub", 
+                                       href = "https://github.com/rfordatascience/tidytuesday/tree/master/data/2022/2022-01-11"), h4("For our specific wrangling procedure check out our rmd file", a("here.", href = "https://github.com/sarnow123/bees-rmd"),h4("Data Citation: National Agricultural Statistics Service (2022),", em("Honey Bee Colonies"),", retrieved 6 April, 2023 at https://github.com/rfordatascience/tidytuesday/tree/master/data/2022/2022-01-11, originally in https://usda.library.cornell.edu/concern/publications/rn301137d?locale=en, latest release Aug 1, 2022."))
+                                  ))
+                        )
+                      )
+                    )
+)
+
+# -------------------------------------
+
+# Server function
+server <- function(input, output, session){
+  
+  # Data for number of colonies
+  data_state <- eventReactive(input$update, {
+    Bee_states  %>%
+      filter(state %in% c(unlist(str_split(input$states, " "))),
+             year >= input$year_range[1], 
+             year <= input$year_range[2])
+  })
+  
+  # Data for colony losses on map
+  data_loss_map <- eventReactive(input$update_1, {
+    Bee_states  %>%
+      filter(year == input$year_range_1)
+  })
+  
+  # Plot of colony number by year and state
+  output$newstates <- renderPlot({
+      ggplot(data = data_state(), mapping = aes(x = StartDate, y = colony_n, color = state)) +
+        geom_line(size = 2) +
+        theme(legend.position = "top", text = element_text(size=20)) +
+        xlab(NULL) +
+        ylab("Colony Count")
+  })
+  
+  # Data for colony counts USA overall
+  data_usa_overall <- eventReactive(input$update_3, {
+    USA_overall %>%
+      filter(year >= input$year_range_2[1], 
+             year <= input$year_range_2[2])
+  })
+  
+  # Plot of colony number USA Overall
+  output$usaOverall <- renderPlot({
+    ggplot(data = data_usa_overall(), mapping = aes(x = StartDate, y = colony_n)) +
+      geom_line(size = 2) +
+      theme(legend.position = "top", text = element_text(size=20)) +
+      xlab(NULL) +
+      ylab("Colony Count")
+  })
+  
+  # Data for table
+  dat_bees_agg <- reactive({ 
+    data_state() %>%
+      select(year, state, colony_n) %>% 
+      group_by(year, state) %>%
+      summarize(average_colony_count = mean(colony_n, na.rm = TRUE))
+  })
+  
+  # Reactive table of colonies by state and year
+  output$table <-  renderDT({
+    datatable(dat_bees_agg(), 
+              options = list(paging = TRUE,
+                             searching = FALSE,
+                             orderClasses = TRUE))
+  })
+  
+  # Render Map
+  output$map <- renderPlot(
+      ggplot(data = data_loss_map(),
+             mapping =
+               aes(geometry = geometry,
+                   fill = colony_lost_pct)) +
+        geom_sf() +
+        coord_sf(crs = 'ESRI:102003') + 
+        scale_fill_viridis_c(
+          name = "Percent of Colony Lost",
+          direction = -1) +
+        theme_void()
+  )
+  
+  # Data for stressors table
+  colony_stressor_table <- eventReactive(input$update_2, {
+    stressor_tidy  %>%
+      filter(state %in% c(unlist(str_split(input$state_name, " "))))
+  })
+  
+  # Render stressor table
+  output$colonies_table <- renderDT({
+    datatable(colony_stressor_table(),
+              options = list(paging = TRUE,
+                             searching = FALSE,
+                             orderClasses = TRUE)) })
+}
+
+
+# Creates app
+shinyApp(ui = ui, server = server)
